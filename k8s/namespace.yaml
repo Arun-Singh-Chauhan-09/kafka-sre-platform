@@ -1,0 +1,12 @@
+# The apps run under the "restricted" Pod Security Standard: the API server
+# rejects any pod that runs as root, keeps capabilities or allows privilege
+# escalation, even if it got past the CI policy checks.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: streaming
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

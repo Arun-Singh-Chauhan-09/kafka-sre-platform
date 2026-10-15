@@ -1,0 +1,30 @@
+# ArgoCD keeps the apps (k8s/ folder) equal to git:
+#   prune: true     -> resources deleted from git are deleted from the cluster
+#   selfHeal: true  -> manual kubectl edits are reverted (drift correction)
+# The chaos drills switch selfHeal off first, or ArgoCD would undo them.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: streaming-apps
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: streaming
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,24 @@
+# Scrape every Strimzi-managed pod of kind Kafka that exposes a metrics port:
+# the three nodes (JMX exporter) and the Kafka Exporter (consumer lag).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kafka-resources
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchExpressions:
+      - key: strimzi.io/kind
+        operator: In
+        values: ["Kafka"]
+  podMetricsEndpoints:
+    - path: /metrics
+      port: tcp-prometheus
+      interval: 15s
+      relabelings:
+        # strimzi.io/name, strimzi.io/pool-name, ... become labels, so
+        # queries can tell brokers from the exporter.
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(strimzi_io_.+)
+          replacement: $1

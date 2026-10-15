@@ -1,0 +1,16 @@
+# Strimzi runs with its "restricted" pod security provider (see
+# platform/strimzi-values.yaml), so every pod it creates is built to pass the
+# restricted Pod Security Standard. The namespace enforces baseline and
+# warns/audits on restricted: a violation is reported loudly but cannot
+# stop a broker from starting during an incident.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest

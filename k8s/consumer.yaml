@@ -1,0 +1,117 @@
+# Consumer group price-indexer: 3 pods share the 6 partitions of
+# price-updates (2 each) and write the latest price per hotel to Redis.
+# FAILURE_RATE and PROCESSING_DELAY_MS are chaos knobs (scripts/chaos.sh);
+# they are in git at 0 so a drill shows up as drift in ArgoCD.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: price-indexer
+  labels:
+    app: price-indexer
+    app.kubernetes.io/component: consumer
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: price-indexer
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: price-indexer
+        app.kubernetes.io/component: consumer
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30 # time to flush / commit offsets on SIGTERM
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: consumer
+          image: stream-app # replaced by kustomize (images: in kustomization.yaml)
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "stream.consumer"]
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: kafka-cluster-kafka-bootstrap.kafka.svc:9092
+            - name: KAFKA_TOPIC
+              value: "price-updates"
+            - name: KAFKA_DLQ_TOPIC
+              value: "price-updates.dlq"
+            - name: KAFKA_GROUP_ID
+              value: "price-indexer"
+            - name: REDIS_HOST
+              value: "redis"
+            - name: FAILURE_RATE
+              value: "0"
+            - name: PROCESSING_DELAY_MS
+              value: "0"
+          ports:
+            - name: http-metrics
+              containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http-metrics
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: price-indexer
+  labels:
+    app: price-indexer
+spec:
+  selector:
+    app: price-indexer
+  ports:
+    - name: http-metrics
+      port: 8000
+      targetPort: http-metrics
+---
+# At most one consumer down at a time during voluntary disruptions (node
+# drains, cluster upgrades): the other two keep the partitions moving.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: price-indexer
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: price-indexer

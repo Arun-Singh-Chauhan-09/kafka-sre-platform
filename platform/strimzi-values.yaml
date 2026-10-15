@@ -1,0 +1,21 @@
+# Helm values for the Strimzi cluster operator.
+#   helm upgrade --install strimzi strimzi/strimzi-kafka-operator --version 0.51.0 \
+#     -n kafka --create-namespace -f platform/strimzi-values.yaml
+#
+# The operator watches its own namespace (kafka) for Kafka, KafkaNodePool and
+# KafkaTopic resources and manages the brokers from them: rolling restarts,
+# certificates, config changes, topic creation.
+
+# Build every pod Strimzi creates to pass the "restricted" Pod Security
+# Standard (non-root, no privilege escalation, capabilities dropped, seccomp).
+extraEnvs:
+  - name: STRIMZI_POD_SECURITY_PROVIDER_CLASS
+    value: restricted
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 384Mi
+  limits:
+    cpu: 500m
+    memory: 384Mi

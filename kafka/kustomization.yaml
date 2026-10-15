@@ -1,0 +1,23 @@
+# The Kafka cluster as code, rendered with:  kubectl kustomize kafka
+#
+# The Strimzi operator (installed by scripts/setup.sh with Helm) watches these
+# custom resources and turns them into broker pods, services, certificates
+# and topics. ArgoCD syncs this folder, so a config change to the cluster is
+# a pull request, not a kubectl command.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kafka
+
+resources:
+  - namespace.yaml
+  - metrics-configmap.yaml
+  - kafka.yaml
+  - topics.yaml
+  - podmonitor.yaml
+  - prometheusrule.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: kafka-sre-platform
+    includeSelectors: false

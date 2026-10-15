@@ -1,0 +1,90 @@
+# Kafka cluster health: is the platform itself OK?
+# (Consumer lag and the pipeline SLO live with the apps: k8s/prometheusrule.yaml.)
+#
+# Every alert links to a runbook in runbooks/: what it means, what users
+# feel, how to diagnose, how to fix.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kafka-cluster
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: kafka.availability
+      rules:
+        - alert: KafkaBrokerDown
+          # "or vector(0)": with every broker down, count() returns nothing,
+          # and an alert on "nothing" never fires.
+          expr: |
+            (count(up{namespace="kafka", pod=~"kafka-cluster-dual-role-[0-9]+"} == 1) or vector(0)) < 3
+          for: 1m
+          labels:
+            namespace: kafka
+            severity: warning
+          annotations:
+            summary: "Only {{ $value }} of 3 Kafka nodes are up"
+            description: "Partitions led by the missing node have moved; their replicas are now under-replicated until it returns."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaBrokerDown.md
+
+        - alert: KafkaQuorumLost
+          # KRaft needs a majority of the 3 controllers (2) to work at all.
+          expr: |
+            (count(up{namespace="kafka", pod=~"kafka-cluster-dual-role-[0-9]+"} == 1) or vector(0)) < 2
+          for: 1m
+          labels:
+            namespace: kafka
+            severity: critical
+          annotations:
+            summary: "Only {{ $value }} of 3 Kafka nodes are up: the controller quorum is lost"
+            description: "With fewer than 2 controllers the cluster cannot elect leaders; reads and writes stop."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaQuorumLost.md
+
+        - alert: KafkaNoActiveController
+          # KRaft: exactly one node must be the active controller.
+          expr: sum(kafka_controller_kafkacontroller_activecontrollercount{namespace="kafka"}) != 1
+          for: 1m
+          labels:
+            namespace: kafka
+            severity: critical
+          annotations:
+            summary: "{{ $value }} active Kafka controllers (expected exactly 1)"
+            description: "Without one active controller, no leader elections or topic changes can happen."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaNoActiveController.md
+
+    - name: kafka.replication
+      rules:
+        - alert: KafkaUnderReplicatedPartitions
+          expr: sum(kafka_server_replicamanager_underreplicatedpartitions{namespace="kafka"}) > 0
+          for: 2m
+          labels:
+            namespace: kafka
+            severity: warning
+          annotations:
+            summary: "{{ $value }} under-replicated partitions"
+            description: "Some partitions have fewer in-sync replicas than configured. Data is safe but one more failure could stop writes."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaUnderReplicatedPartitions.md
+
+        - alert: KafkaUnderMinIsrPartitions
+          # Below min.insync.replicas (2), acks=all producers get
+          # NOT_ENOUGH_REPLICAS: writes to these partitions fail.
+          expr: sum(kafka_server_replicamanager_underminisrpartitioncount{namespace="kafka"}) > 0
+          for: 1m
+          labels:
+            namespace: kafka
+            severity: critical
+          annotations:
+            summary: "{{ $value }} partitions below min.insync.replicas: writes are failing"
+            description: "Producers using acks=all cannot write to these partitions until a second replica is back in sync."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaUnderMinIsrPartitions.md
+
+        - alert: KafkaOfflinePartitions
+          expr: sum(kafka_controller_kafkacontroller_offlinepartitionscount{namespace="kafka"}) > 0
+          for: 1m
+          labels:
+            namespace: kafka
+            severity: critical
+          annotations:
+            summary: "{{ $value }} partitions have no leader"
+            description: "Offline partitions can be neither read nor written."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaOfflinePartitions.md

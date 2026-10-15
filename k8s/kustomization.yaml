@@ -1,0 +1,38 @@
+# The streaming apps, rendered with:  kubectl kustomize k8s
+#
+# The image tag below is the single source of truth for "what version runs".
+# The release workflow bumps newTag on every vX.Y.Z tag and commits it;
+# ArgoCD notices the commit and rolls both Deployments.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: streaming
+
+resources:
+  - namespace.yaml
+  - redis.yaml
+  - producer.yaml
+  - consumer.yaml
+  - servicemonitor.yaml
+  - prometheusrule.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: kafka-sre-platform
+    includeSelectors: false
+
+images:
+  - name: stream-app
+    newName: ghcr.io/arun-singh-chauhan-09/kafka-sre-platform
+    newTag: 0.1.0
+
+# Grafana's sidecar loads any ConfigMap labelled grafana_dashboard=1, so the
+# dashboard ships with the code instead of being clicked together.
+configMapGenerator:
+  - name: kafka-sre-dashboard
+    files:
+      - dashboards/kafka-sre.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

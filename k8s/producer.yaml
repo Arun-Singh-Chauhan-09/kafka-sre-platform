@@ -1,0 +1,97 @@
+# Publishes ~50 hotel price updates per second to the price-updates topic.
+# One replica: the rate is per pod, so more replicas means more traffic.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: price-producer
+  labels:
+    app: price-producer
+    app.kubernetes.io/component: producer
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: price-producer
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: price-producer
+        app.kubernetes.io/component: producer
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30 # time to flush / commit offsets on SIGTERM
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: producer
+          image: stream-app # replaced by kustomize (images: in kustomization.yaml)
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "stream.producer"]
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: kafka-cluster-kafka-bootstrap.kafka.svc:9092
+            - name: KAFKA_TOPIC
+              value: "price-updates"
+            - name: PRODUCE_RATE
+              value: "50"
+            - name: HOTELS
+              value: "5000"
+          ports:
+            - name: http-metrics
+              containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http-metrics
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: price-producer
+  labels:
+    app: price-producer
+spec:
+  selector:
+    app: price-producer
+  ports:
+    - name: http-metrics
+      port: 8000
+      targetPort: http-metrics

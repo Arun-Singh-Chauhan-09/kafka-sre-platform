@@ -1,0 +1,33 @@
+# ArgoCD keeps the Kafka cluster (kafka/ folder) equal to git:
+#   brokers, topics, metrics config, alerts.
+# Stateful resources (Kafka, KafkaNodePool, KafkaTopic) carry
+# Prune=false,Delete=false: removing a file from git, or deleting this
+# Application, must never delete a cluster or a topic full of data.
+#
+# Change repoURL if you fork or rename the repository.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka-cluster
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform.git
+    targetRevision: main
+    path: kafka
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

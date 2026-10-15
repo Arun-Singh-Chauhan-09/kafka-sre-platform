@@ -1,0 +1,37 @@
+# Topics as code. The topic operator creates and updates them; changing
+# partitions or retention is a pull request.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: price-updates
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  # 6 partitions: up to 6 consumers can share the load (3 run by default).
+  # Partitions can be increased later but never decreased, and increasing
+  # them changes which partition a hotel_id key maps to.
+  partitions: 6
+  replicas: 3
+  config:
+    min.insync.replicas: 2
+    retention.ms: 86400000 # 24 h: enough to replay a day after a consumer bug
+    cleanup.policy: delete
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: price-updates.dlq
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  # Dead-letter topic: events the consumer could not process. Kept longer,
+  # so there is time to inspect them and replay after a fix.
+  partitions: 3
+  replicas: 3
+  config:
+    min.insync.replicas: 2
+    retention.ms: 604800000 # 7 days

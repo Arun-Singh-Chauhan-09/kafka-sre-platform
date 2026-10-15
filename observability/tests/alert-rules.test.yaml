@@ -1,0 +1,300 @@
+# Unit tests for the alert rules in kafka/prometheusrule.yaml and
+# k8s/prometheusrule.yaml. Run: scripts/test-alerts.sh
+#
+# Each test feeds Prometheus synthetic series sampled every 15s and asserts
+# exactly which alerts fire at a point in time. 50 events/s = +750 per sample.
+# Series carry the labels the Prometheus Operator really attaches (job,
+# namespace, pod), so a label clash would break these tests, not production.
+
+rule_files:
+  - rules.generated-kafka.yaml
+  - rules.generated-streaming.yaml
+
+evaluation_interval: 15s
+
+tests:
+  # ======================= Kafka cluster =======================
+  - name: healthy cluster
+    interval: 15s
+    input_series:
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '1x40'
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-1"}'
+        values: '1x40'
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-2"}'
+        values: '1x40'
+      - series: 'kafka_server_replicamanager_underreplicatedpartitions{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '0x40'
+      - series: 'kafka_server_replicamanager_underminisrpartitioncount{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '0x40'
+      - series: 'kafka_controller_kafkacontroller_offlinepartitionscount{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '0x40'
+      - series: 'kafka_controller_kafkacontroller_activecontrollercount{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '1x40'
+      - series: 'kafka_controller_kafkacontroller_activecontrollercount{namespace="kafka",pod="kafka-cluster-dual-role-1"}'
+        values: '0x40'
+      - series: 'kafka_controller_kafkacontroller_activecontrollercount{namespace="kafka",pod="kafka-cluster-dual-role-2"}'
+        values: '0x40'
+    alert_rule_test:
+      - {eval_time: 5m, alertname: KafkaBrokerDown, exp_alerts: []}
+      - {eval_time: 5m, alertname: KafkaQuorumLost, exp_alerts: []}
+      - {eval_time: 5m, alertname: KafkaNoActiveController, exp_alerts: []}
+      - {eval_time: 5m, alertname: KafkaUnderReplicatedPartitions, exp_alerts: []}
+      - {eval_time: 5m, alertname: KafkaUnderMinIsrPartitions, exp_alerts: []}
+      - {eval_time: 5m, alertname: KafkaOfflinePartitions, exp_alerts: []}
+
+  - name: "chaos-broker: one node down"
+    interval: 15s
+    input_series:
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '1x40'
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-1"}'
+        values: '1x40'
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-2"}'
+        values: '0x40'
+      - series: 'kafka_server_replicamanager_underreplicatedpartitions{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '4x40'
+      - series: 'kafka_server_replicamanager_underreplicatedpartitions{namespace="kafka",pod="kafka-cluster-dual-role-1"}'
+        values: '4x40'
+      - series: 'kafka_server_replicamanager_underminisrpartitioncount{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '0x40'
+    alert_rule_test:
+      - {eval_time: 30s, alertname: KafkaBrokerDown, exp_alerts: []} # "for: 1m" not over yet
+      - eval_time: 3m
+        alertname: KafkaBrokerDown
+        exp_alerts:
+          - exp_labels: {namespace: kafka, severity: warning}
+            exp_annotations:
+              summary: "Only 2 of 3 Kafka nodes are up"
+              description: "Partitions led by the missing node have moved; their replicas are now under-replicated until it returns."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaBrokerDown.md
+      - eval_time: 3m
+        alertname: KafkaUnderReplicatedPartitions
+        exp_alerts:
+          - exp_labels: {namespace: kafka, severity: warning}
+            exp_annotations:
+              summary: "8 under-replicated partitions"
+              description: "Some partitions have fewer in-sync replicas than configured. Data is safe but one more failure could stop writes."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaUnderReplicatedPartitions.md
+      - {eval_time: 3m, alertname: KafkaQuorumLost, exp_alerts: []}
+      - {eval_time: 3m, alertname: KafkaUnderMinIsrPartitions, exp_alerts: []}
+
+  - name: two nodes down, quorum lost, writes failing
+    interval: 15s
+    input_series:
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '1x40'
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-1"}'
+        values: '0x40'
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-2"}'
+        values: '0x40'
+      - series: 'kafka_server_replicamanager_underminisrpartitioncount{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '3x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KafkaQuorumLost
+        exp_alerts:
+          - exp_labels: {namespace: kafka, severity: critical}
+            exp_annotations:
+              summary: "Only 1 of 3 Kafka nodes are up: the controller quorum is lost"
+              description: "With fewer than 2 controllers the cluster cannot elect leaders; reads and writes stop."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaQuorumLost.md
+      - eval_time: 3m
+        alertname: KafkaUnderMinIsrPartitions
+        exp_alerts:
+          - exp_labels: {namespace: kafka, severity: critical}
+            exp_annotations:
+              summary: "3 partitions below min.insync.replicas: writes are failing"
+              description: "Producers using acks=all cannot write to these partitions until a second replica is back in sync."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaUnderMinIsrPartitions.md
+
+  - name: every node down (no "up == 1" series at all)
+    interval: 15s
+    input_series:
+      - series: 'up{job="kafka/kafka-resources",namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KafkaQuorumLost
+        exp_alerts:
+          - exp_labels: {namespace: kafka, severity: critical}
+            exp_annotations:
+              summary: "Only 0 of 3 Kafka nodes are up: the controller quorum is lost"
+              description: "With fewer than 2 controllers the cluster cannot elect leaders; reads and writes stop."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaQuorumLost.md
+
+  - name: offline partitions and no active controller
+    interval: 15s
+    input_series:
+      - series: 'kafka_controller_kafkacontroller_offlinepartitionscount{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '6x40'
+      - series: 'kafka_controller_kafkacontroller_activecontrollercount{namespace="kafka",pod="kafka-cluster-dual-role-0"}'
+        values: '0x40'
+      - series: 'kafka_controller_kafkacontroller_activecontrollercount{namespace="kafka",pod="kafka-cluster-dual-role-1"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KafkaOfflinePartitions
+        exp_alerts:
+          - exp_labels: {namespace: kafka, severity: critical}
+            exp_annotations:
+              summary: "6 partitions have no leader"
+              description: "Offline partitions can be neither read nor written."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaOfflinePartitions.md
+      - eval_time: 3m
+        alertname: KafkaNoActiveController
+        exp_alerts:
+          - exp_labels: {namespace: kafka, severity: critical}
+            exp_annotations:
+              summary: "0 active Kafka controllers (expected exactly 1)"
+              description: "Without one active controller, no leader elections or topic changes can happen."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaNoActiveController.md
+
+  # ======================= Streaming pipeline =======================
+  - name: healthy pipeline
+    interval: 15s
+    input_series:
+      - series: 'up{job="price-producer",namespace="streaming",pod="price-producer-1"}'
+        values: '1x80'
+      - series: 'up{job="price-indexer",namespace="streaming",pod="price-indexer-1"}'
+        values: '1x80'
+      - series: 'producer_messages_total{job="price-producer",namespace="streaming",result="ok"}'
+        values: '0+750x80'
+      - series: 'consumer_messages_total{job="price-indexer",namespace="streaming",result="ok"}'
+        values: '0+750x80'
+      - series: 'consumer_store_errors_total{job="price-indexer",namespace="streaming"}'
+        values: '0x80'
+      - series: 'stream_end_to_end_latency_seconds_bucket{job="price-indexer",namespace="streaming",le="0.5"}'
+        values: '0+750x80'
+      - series: 'stream_end_to_end_latency_seconds_bucket{job="price-indexer",namespace="streaming",le="5.0"}'
+        values: '0+750x80'
+      - series: 'stream_end_to_end_latency_seconds_bucket{job="price-indexer",namespace="streaming",le="+Inf"}'
+        values: '0+750x80'
+      - series: 'stream_end_to_end_latency_seconds_count{job="price-indexer",namespace="streaming"}'
+        values: '0+750x80'
+      - series: 'kafka_consumergroup_lag{namespace="kafka",consumergroup="price-indexer",topic="price-updates",partition="0"}'
+        values: '10x80'
+      - series: 'kafka_consumergroup_current_offset{namespace="kafka",consumergroup="price-indexer",topic="price-updates",partition="0"}'
+        values: '0+750x80'
+    alert_rule_test:
+      - {eval_time: 15m, alertname: StreamProducerDown, exp_alerts: []}
+      - {eval_time: 15m, alertname: StreamConsumerDown, exp_alerts: []}
+      - {eval_time: 15m, alertname: KafkaConsumerLagHigh, exp_alerts: []}
+      - {eval_time: 15m, alertname: KafkaConsumerGroupStalled, exp_alerts: []}
+      - {eval_time: 15m, alertname: StreamSinkUnavailable, exp_alerts: []}
+      - {eval_time: 15m, alertname: StreamProducerErrors, exp_alerts: []}
+      - {eval_time: 15m, alertname: StreamProcessingErrorsHigh, exp_alerts: []}
+      - {eval_time: 15m, alertname: StreamEndToEndLatencyHigh, exp_alerts: []}
+      - {eval_time: 15m, alertname: StreamFreshnessBudgetBurn, exp_alerts: []}
+
+  - name: "chaos-consumer: consumers scaled to 0"
+    interval: 15s
+    input_series:
+      - series: 'up{job="price-producer",namespace="streaming",pod="price-producer-1"}'
+        values: '1x40'
+      # Constant values: alert annotations then don't depend on whether the
+      # recording rule was evaluated just before or just after the alert.
+      - series: 'kafka_consumergroup_lag{namespace="kafka",consumergroup="price-indexer",topic="price-updates",partition="0"}'
+        values: '15000x40'
+      - series: 'kafka_consumergroup_current_offset{namespace="kafka",consumergroup="price-indexer",topic="price-updates",partition="0"}'
+        values: '5000x40'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: StreamConsumerDown
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: critical}
+            exp_annotations:
+              summary: "No price-indexer consumer is running"
+              description: "Events pile up in Kafka (lag grows) and nothing reaches Redis."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamConsumerDown.md
+      - eval_time: 5m
+        alertname: KafkaConsumerLagHigh
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: warning, consumergroup: price-indexer, topic: price-updates}
+            exp_annotations:
+              summary: "Consumer group price-indexer is 15000 events behind on price-updates"
+              description: "The consumers are slower than the producers. At 50 events/s, 1000 events is about 20 s of delay."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaConsumerLagHigh.md
+      - {eval_time: 2m, alertname: KafkaConsumerGroupStalled, exp_alerts: []} # "for: 3m"
+      - eval_time: 5m
+        alertname: KafkaConsumerGroupStalled
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: critical, consumergroup: price-indexer, topic: price-updates}
+            exp_annotations:
+              summary: "Consumer group price-indexer has stopped making progress"
+              description: "Committed offsets have not moved for 5 minutes while events are waiting."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaConsumerGroupStalled.md
+
+  - name: "chaos-slow: events take 5-10 s to reach Redis"
+    interval: 15s
+    input_series:
+      - series: 'stream_end_to_end_latency_seconds_bucket{job="price-indexer",namespace="streaming",le="5.0"}'
+        values: '0x40'
+      - series: 'stream_end_to_end_latency_seconds_bucket{job="price-indexer",namespace="streaming",le="10.0"}'
+        values: '0+750x40'
+      - series: 'stream_end_to_end_latency_seconds_bucket{job="price-indexer",namespace="streaming",le="+Inf"}'
+        values: '0+750x40'
+      - series: 'stream_end_to_end_latency_seconds_count{job="price-indexer",namespace="streaming"}'
+        values: '0+750x40'
+    alert_rule_test:
+      - {eval_time: 2m, alertname: StreamEndToEndLatencyHigh, exp_alerts: []} # "for: 3m"
+      - eval_time: 5m
+        alertname: StreamEndToEndLatencyHigh
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: warning}
+            exp_annotations:
+              summary: "p99 produce-to-Redis latency is 9.95s"
+              description: "Above the 5 s freshness objective for 3 minutes."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamEndToEndLatencyHigh.md
+      - eval_time: 5m
+        alertname: StreamFreshnessBudgetBurn
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: warning}
+            exp_annotations:
+              summary: "Freshness error budget is burning 14x too fast"
+              description: "More than 14.4% of events took longer than 5 s to reach Redis, over both the last hour and the last 5 minutes."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamFreshnessBudgetBurn.md
+
+  - name: "chaos-redis: sink down, events retried"
+    interval: 15s
+    input_series:
+      - series: 'consumer_store_errors_total{job="price-indexer",namespace="streaming",pod="price-indexer-1"}'
+        values: '0+15x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: StreamSinkUnavailable
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: critical}
+            exp_annotations:
+              summary: "The consumer cannot write to Redis"
+              description: "Events are retried, not lost, but nothing is being stored. Lag will keep growing."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamSinkUnavailable.md
+
+  - name: "chaos-errors: 20% of events fail processing; 10% of produce calls fail"
+    interval: 15s
+    input_series:
+      - series: 'consumer_messages_total{job="price-indexer",namespace="streaming",result="ok"}'
+        values: '0+600x40'
+      - series: 'consumer_messages_total{job="price-indexer",namespace="streaming",result="failed"}'
+        values: '0+150x40'
+      - series: 'producer_messages_total{job="price-producer",namespace="streaming",result="ok"}'
+        values: '0+675x40'
+      - series: 'producer_messages_total{job="price-producer",namespace="streaming",result="error"}'
+        values: '0+75x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: StreamProcessingErrorsHigh
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: warning}
+            exp_annotations:
+              summary: "20% of events are going to the dead-letter topic"
+              description: "Events that cannot be processed are parked on price-updates.dlq instead of blocking the partition."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamProcessingErrorsHigh.md
+      - eval_time: 4m
+        alertname: StreamProducerErrors
+        exp_alerts:
+          - exp_labels: {namespace: streaming, severity: critical}
+            exp_annotations:
+              summary: "10% of produce requests are failing"
+              description: "Events are not being accepted by Kafka (acks=all). Often caused by partitions below min.insync.replicas."
+              runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamProducerErrors.md

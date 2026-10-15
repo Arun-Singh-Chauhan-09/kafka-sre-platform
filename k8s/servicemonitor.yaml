@@ -1,0 +1,18 @@
+# Prometheus scrapes /metrics of both apps every 15 s.
+# job label = Service name: job="price-producer" / job="price-indexer".
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: streaming-apps
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["price-producer", "price-indexer"]
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: 15s

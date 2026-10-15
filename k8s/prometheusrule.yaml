@@ -1,0 +1,166 @@
+# The pipeline from the user's point of view: are prices arriving in Redis,
+# and how fresh are they? Versioned and deployed with the apps (ArgoCD),
+# so changing an SLO goes through a pull request like code.
+#
+# SLO (freshness): 99% of price updates are stored in Redis within 5 s of
+# being produced. Error budget: 1% of events may be slower.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: streaming-pipeline
+  labels:
+    release: monitoring
+spec:
+  groups:
+    # --- recording rules: compute each SLI once, reuse it everywhere -------
+    - name: streaming.sli
+      rules:
+        - record: streaming:e2e_slow_ratio:rate5m
+          expr: |
+            1 - (
+              sum(rate(stream_end_to_end_latency_seconds_bucket{job="price-indexer",le="5.0"}[5m]))
+              /
+              sum(rate(stream_end_to_end_latency_seconds_count{job="price-indexer"}[5m]))
+            )
+        - record: streaming:e2e_slow_ratio:rate1h
+          expr: |
+            1 - (
+              sum(rate(stream_end_to_end_latency_seconds_bucket{job="price-indexer",le="5.0"}[1h]))
+              /
+              sum(rate(stream_end_to_end_latency_seconds_count{job="price-indexer"}[1h]))
+            )
+        - record: streaming:e2e_latency_p99:rate5m
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(stream_end_to_end_latency_seconds_bucket{job="price-indexer"}[5m])))
+        - record: streaming:consumer_error_ratio:rate5m
+          expr: |
+            sum(rate(consumer_messages_total{job="price-indexer",result=~"invalid|failed"}[5m]))
+            /
+            sum(rate(consumer_messages_total{job="price-indexer"}[5m]))
+        - record: streaming:producer_error_ratio:rate5m
+          expr: |
+            sum(rate(producer_messages_total{job="price-producer",result="error"}[5m]))
+            /
+            sum(rate(producer_messages_total{job="price-producer"}[5m]))
+        - record: streaming:consumer_lag:sum
+          # From the Kafka Exporter: newest offset minus committed offset,
+          # summed over the 6 partitions.
+          expr: |
+            sum by (consumergroup, topic) (
+              kafka_consumergroup_lag{namespace="kafka",consumergroup="price-indexer",topic="price-updates"})
+
+    # --- availability: are the apps there at all? --------------------------
+    - name: streaming.availability
+      rules:
+        - alert: StreamProducerDown
+          expr: absent(up{job="price-producer"} == 1)
+          for: 1m
+          labels:
+            namespace: streaming
+            severity: critical
+          annotations:
+            summary: "No price producer is running"
+            description: "No new price updates are entering Kafka; prices in Redis are getting stale."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamProducerDown.md
+        - alert: StreamConsumerDown
+          expr: absent(up{job="price-indexer"} == 1)
+          for: 1m
+          labels:
+            namespace: streaming
+            severity: critical
+          annotations:
+            summary: "No price-indexer consumer is running"
+            description: "Events pile up in Kafka (lag grows) and nothing reaches Redis."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamConsumerDown.md
+
+    # --- the pipeline: is data moving, and fast enough? --------------------
+    - name: streaming.pipeline
+      rules:
+        - alert: KafkaConsumerLagHigh
+          expr: streaming:consumer_lag:sum > 1000
+          for: 2m
+          labels:
+            namespace: streaming
+            severity: warning
+          annotations:
+            summary: "Consumer group {{ $labels.consumergroup }} is {{ $value }} events behind on {{ $labels.topic }}"
+            description: "The consumers are slower than the producers. At 50 events/s, 1000 events is about 20 s of delay."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaConsumerLagHigh.md
+        - alert: KafkaConsumerGroupStalled
+          # Lag exists and the committed offsets have not moved at all.
+          expr: |
+            streaming:consumer_lag:sum > 0
+            and on ()
+            sum(rate(kafka_consumergroup_current_offset{namespace="kafka",consumergroup="price-indexer",topic="price-updates"}[2m])) == 0
+          for: 3m
+          labels:
+            namespace: streaming
+            severity: critical
+          annotations:
+            summary: "Consumer group {{ $labels.consumergroup }} has stopped making progress"
+            description: "Committed offsets have not moved for 5 minutes while events are waiting."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/KafkaConsumerGroupStalled.md
+        - alert: StreamSinkUnavailable
+          # The consumer retries failed Redis writes instead of dropping
+          # events, so an outage shows up here and as growing lag.
+          expr: sum(rate(consumer_store_errors_total{job="price-indexer"}[2m])) > 0
+          for: 1m
+          labels:
+            namespace: streaming
+            severity: critical
+          annotations:
+            summary: "The consumer cannot write to Redis"
+            description: "Events are retried, not lost, but nothing is being stored. Lag will keep growing."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamSinkUnavailable.md
+        - alert: StreamProducerErrors
+          expr: streaming:producer_error_ratio:rate5m > 0.01
+          for: 2m
+          labels:
+            namespace: streaming
+            severity: critical
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of produce requests are failing"
+            description: "Events are not being accepted by Kafka (acks=all). Often caused by partitions below min.insync.replicas."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamProducerErrors.md
+        - alert: StreamProcessingErrorsHigh
+          expr: streaming:consumer_error_ratio:rate5m > 0.05
+          for: 2m
+          labels:
+            namespace: streaming
+            severity: warning
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of events are going to the dead-letter topic"
+            description: "Events that cannot be processed are parked on price-updates.dlq instead of blocking the partition."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamProcessingErrorsHigh.md
+
+    # --- SLO: freshness ----------------------------------------------------
+    - name: streaming.slo
+      rules:
+        - alert: StreamEndToEndLatencyHigh
+          expr: streaming:e2e_latency_p99:rate5m > 5
+          for: 3m
+          labels:
+            namespace: streaming
+            severity: warning
+          annotations:
+            summary: "p99 produce-to-Redis latency is {{ $value | humanizeDuration }}"
+            description: "Above the 5 s freshness objective for 3 minutes."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamEndToEndLatencyHigh.md
+        - alert: StreamFreshnessBudgetBurn
+          # Multi-window burn rate (Google SRE workbook): the 1h window proves
+          # it is sustained, the 5m window proves it is still happening, so
+          # the alert clears quickly after a fix. 14.4x burns a 30-day budget
+          # in about 2 days.
+          expr: |
+            streaming:e2e_slow_ratio:rate1h > (14.4 * 0.01)
+            and
+            streaming:e2e_slow_ratio:rate5m > (14.4 * 0.01)
+          for: 2m
+          labels:
+            namespace: streaming
+            severity: warning
+          annotations:
+            summary: "Freshness error budget is burning 14x too fast"
+            description: "More than 14.4% of events took longer than 5 s to reach Redis, over both the last hour and the last 5 minutes."
+            runbook_url: https://github.com/Arun-Singh-Chauhan-09/kafka-sre-platform/blob/main/runbooks/StreamFreshnessBudgetBurn.md

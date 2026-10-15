@@ -1,0 +1,109 @@
+# Helm values for kube-prometheus-stack on the local kind cluster.
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace -f platform/kube-prometheus-values.yaml
+
+# --- Prometheus ------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors/PodMonitors/PrometheusRules from every
+    # namespace, not only ones labelled for this Helm release: the Kafka
+    # cluster and the apps ship their own.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    retention: 6h # long enough for the 1h burn-rate window; it's a laptop
+    resources:
+      requests:
+        cpu: 100m
+        memory: 384Mi
+
+# --- Alertmanager ------------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+  config:
+    global:
+      resolve_timeout: 2m
+    route:
+      receiver: default
+      group_by: ["alertname", "namespace"]
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 4h
+      routes:
+        # Watchdog always fires by design: it proves the alert pipeline is
+        # alive. Route it to a null receiver so it doesn't clutter the demo.
+        - matchers: ['alertname = "Watchdog"']
+          receiver: "null"
+        - matchers: ['severity = "critical"']
+          receiver: critical
+    # One page per incident: page on the cause, suppress its symptoms.
+    inhibit_rules:
+      # No consumer, or no sink: lag, stall and freshness alerts are just
+      # consequences.
+      - source_matchers: ['alertname =~ "StreamConsumerDown|StreamSinkUnavailable"']
+        target_matchers: ['alertname =~ "KafkaConsumerLagHigh|KafkaConsumerGroupStalled|StreamEndToEndLatencyHigh|StreamFreshnessBudgetBurn"']
+        equal: ["namespace"]
+      - source_matchers: ['alertname = "KafkaConsumerGroupStalled"']
+        target_matchers: ['alertname = "KafkaConsumerLagHigh"']
+        equal: ["namespace"]
+      # A broker down explains its under-replicated partitions.
+      - source_matchers: ['alertname = "KafkaBrokerDown"']
+        target_matchers: ['alertname = "KafkaUnderReplicatedPartitions"']
+        equal: ["namespace"]
+      - source_matchers: ['alertname = "KafkaQuorumLost"']
+        target_matchers: ['alertname =~ "KafkaBrokerDown|KafkaUnderReplicatedPartitions|KafkaUnderMinIsrPartitions|KafkaOfflinePartitions|KafkaNoActiveController"']
+        equal: ["namespace"]
+      # Cross-namespace: when partitions cannot take writes, failing
+      # producers are the expected symptom, not a second incident.
+      - source_matchers: ['alertname =~ "KafkaUnderMinIsrPartitions|KafkaOfflinePartitions|KafkaQuorumLost"']
+        target_matchers: ['alertname = "StreamProducerErrors"']
+    receivers:
+      - name: "null"
+      - name: default
+      # To get real notifications, add e.g. slack_configs or
+      # pagerduty_configs here.
+      - name: critical
+
+# --- Grafana -----------------------------------------------------------------
+grafana:
+  adminPassword: admin # local demo only
+  defaultDashboardsEnabled: true
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL # the dashboard lives in the streaming namespace
+    datasources:
+      defaultDatasourceEnabled: true
+      uid: prometheus # dashboards reference this uid
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      url: http://loki.monitoring.svc.cluster.local:3100
+      access: proxy
+      isDefault: false
+
+# --- Components that can't be scraped on kind --------------------------------
+# kind binds these control-plane components to 127.0.0.1, so Prometheus would
+# show them as DOWN and fire alerts that have nothing to do with the platform.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeProxy: false

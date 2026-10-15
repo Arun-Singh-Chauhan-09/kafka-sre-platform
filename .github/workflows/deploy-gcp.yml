@@ -1,0 +1,61 @@
+name: deploy-gcp
+
+# Applies the GCP infrastructure (infra/gcp/envs/<env>). Skipped entirely
+# until the repository variable GCP_ENABLED is "true", so the repository
+# stays green without a GCP account. The free, local equivalent is the
+# kind/ArgoCD track.
+#
+# Workloads are not deployed from here: on GKE, as on kind, ArgoCD pulls
+# kafka/ and k8s/ from git. This workflow only owns the infrastructure.
+
+on:
+  push:
+    branches: [main]
+    paths: ["infra/gcp/**", "policy/**"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity Federation: no service account keys
+
+concurrency:
+  group: deploy-gcp-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false # never interrupt an apply
+
+jobs:
+  apply:
+    name: Terraform plan, policy gate, apply
+    if: vars.GCP_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: ${{ github.event.inputs.environment || 'dev' }} # GitHub environment: prod needs approval
+    env:
+      TF_ENV_DIR: infra/gcp/envs/${{ github.event.inputs.environment || 'dev' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+      - name: Install conftest
+        run: curl -fsSL https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_Linux_x86_64.tar.gz | sudo tar xz -C /usr/local/bin conftest
+      - name: Authenticate to GCP (OIDC -> deploy service account, main only)
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Plan
+        run: |
+          terraform -chdir=$TF_ENV_DIR init -input=false
+          terraform -chdir=$TF_ENV_DIR plan -input=false -out=tf.plan
+          terraform -chdir=$TF_ENV_DIR show -json tf.plan > plan.json
+      - name: Policy gate (the plan that is applied is the plan that was checked)
+        run: conftest test --policy policy --namespace main plan.json
+      - name: Apply exactly that plan
+        run: terraform -chdir=$TF_ENV_DIR apply -input=false tf.plan
+      - name: Outputs
+        run: terraform -chdir=$TF_ENV_DIR output >> "$GITHUB_STEP_SUMMARY"

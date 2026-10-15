@@ -1,0 +1,10 @@
+# Fallback for machines without Terraform: the same cluster as main.tf.
+#   kind create cluster --config infra/local-kind/kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kafka-sre
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.31.0
+  - role: worker
+    image: kindest/node:v1.31.0

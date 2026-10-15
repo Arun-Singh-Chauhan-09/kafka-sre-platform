@@ -1,0 +1,95 @@
+# Three Kafka nodes in KRaft mode (no ZooKeeper). Each node is both a
+# controller (metadata quorum) and a broker (data): the smallest layout that
+# still survives losing one node.
+#
+# Sized for a laptop: 256 MB heap per node. Production splits controllers
+# from brokers and gives brokers far more memory, mostly for page cache.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  replicas: 3
+  roles:
+    - controller
+    - broker
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+  jvmOptions:
+    "-Xms": 256m
+    "-Xmx": 256m
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 2Gi
+        deleteClaim: true # laptop: deleting the cluster also frees the disk
+        kraftMetadata: shared
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: kafka-cluster
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  kafka:
+    version: 4.2.0
+    metadataVersion: 4.2-IV1
+    listeners:
+      # In-cluster only, plaintext: see README "Intentionally simplified".
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      # Replication 3 with min.insync.replicas 2: with acks=all, every write
+      # is on at least two nodes before it is acknowledged. One node can be
+      # lost (or restarted for an upgrade) without losing data or writes.
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      # Topics are created only through KafkaTopic resources (git), never
+      # by a typo in a client config.
+      auto.create.topics.enable: false
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: kafka-metrics
+          key: kafka-metrics-config.yml
+  entityOperator:
+    # Topic operator: KafkaTopic resources in git -> real topics.
+    topicOperator:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 384Mi
+  # Kafka Exporter: consumer group lag and topic offsets as Prometheus
+  # metrics (kafka_consumergroup_lag, kafka_topic_partition_current_offset).
+  kafkaExporter:
+    topicRegex: "price-updates.*"
+    groupRegex: ".*"
+    showAllOffsets: true # keep reporting lag when the group has no members
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
