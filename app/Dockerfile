@@ -2,7 +2,7 @@
 #   python -m stream.producer   |   python -m stream.consumer
 
 # ---- build stage -------------------------------------------------------
-FROM python:3.12-slim AS build
+FROM python:3.14-slim AS build
 
 WORKDIR /app
 COPY requirements.txt .
@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---- runtime stage -----------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # Version is injected at build time: docker build --build-arg VERSION=0.1.0
 ARG VERSION=dev
