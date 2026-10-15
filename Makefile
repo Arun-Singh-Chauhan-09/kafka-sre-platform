@@ -68,7 +68,7 @@ chaos-errors: ## 20% processing failures -> DLQ, StreamProcessingErrorsHigh
 chaos-redis: ## Stop Redis -> StreamSinkUnavailable, retries without data loss
 	./scripts/chaos.sh redis
 
-chaos-off: ## Undo every drill, re-enable GitOps self-heal
+chaos-off: ## Undo every drill, resume GitOps auto-sync
 	./scripts/chaos.sh off
 
 # --- checks (the same ones CI runs) ---------------------------------------------

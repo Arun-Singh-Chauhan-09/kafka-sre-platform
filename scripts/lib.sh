@@ -53,10 +53,24 @@ kafka_cli() { # tool args...
 
 argocd_app_exists() { k -n argocd get application "$1" >/dev/null 2>&1; }
 
+# Drills change the cluster on purpose, so GitOps must not undo them.
+# Turning off only selfHeal is not enough: ArgoCD still runs ONE automated
+# sync per new git revision, and it does so the moment the app drifts. If
+# that revision was never synced before (e.g. a commit that only touched
+# other folders), the drill is reverted within a minute. So drills switch
+# automated sync off completely, and "chaos off" switches it back on.
 set_self_heal() { # application true|false
-  local app="$1" value="$2"
+  local app="$1" value="$2" patch
   argocd_app_exists "$app" || return 0
-  k -n argocd patch application "$app" --type merge \
-    -p "{\"spec\":{\"syncPolicy\":{\"automated\":{\"prune\":true,\"selfHeal\":${value}}}}}" >/dev/null
-  info "ArgoCD self-heal for ${app}: ${value}"
+  if [ "$value" = "true" ]; then
+    patch='{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+  else
+    patch='{"spec":{"syncPolicy":{"automated":null}}}'
+  fi
+  k -n argocd patch application "$app" --type merge -p "$patch" >/dev/null
+  if [ "$value" = "true" ]; then
+    info "ArgoCD automated sync for ${app}: on (prune + self-heal)"
+  else
+    info "ArgoCD automated sync for ${app}: paused (drill in progress)"
+  fi
 }

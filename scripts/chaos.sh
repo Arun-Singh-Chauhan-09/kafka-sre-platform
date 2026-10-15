@@ -10,10 +10,10 @@
 #   scripts/chaos.sh errors      20% of events fail -> DLQ, StreamProcessingErrorsHigh
 #   scripts/chaos.sh redis       stop Redis -> StreamSinkUnavailable; events are
 #                                retried, not lost (lag grows, then drains)
-#   scripts/chaos.sh off         undo all of the above, re-enable GitOps self-heal
+#   scripts/chaos.sh off         undo all of the above, resume GitOps auto-sync
 #
-# Drills that change a Deployment pause ArgoCD self-heal first; otherwise
-# ArgoCD would restore the git state within seconds and no alert would fire.
+# Drills that change a Deployment pause ArgoCD automated sync first;
+# otherwise ArgoCD would restore the git state and no alert would fire.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib.sh

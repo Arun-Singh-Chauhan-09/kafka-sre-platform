@@ -143,8 +143,9 @@ needs to be installed locally.
 ## Chaos drills
 
 Each drill breaks one thing and names the alert that should catch it.
-Drills that change a Deployment pause ArgoCD self-heal first (otherwise
-ArgoCD restores git within seconds); `make chaos-off` undoes everything.
+Drills that change a Deployment pause ArgoCD automated sync first (otherwise
+ArgoCD restores git and no alert fires); `make chaos-off` undoes everything
+and resumes auto-sync.
 
 | Drill | What breaks | What you see | Alert |
 |---|---|---|---|
@@ -322,6 +323,21 @@ costs roughly 10-15 EUR/day while running):
 5. `gcloud container clusters get-credentials ...` (output), then install
    the same platform with Helm/ArgoCD as locally.
 6. `terraform ... destroy` when done.
+
+---
+
+## Found while running it
+
+- **Turning off `selfHeal` did not stop ArgoCD.** The first consumer drill
+  was reverted after ~2.5 minutes: ArgoCD runs one automated sync per new
+  git revision, and the latest commit (which only touched Helm values) had
+  never been synced for this app. When the drill made the app drift, that
+  sync ran and scaled the consumers back to 3. The drills now pause
+  automated sync completely and resume it on `make chaos-off`.
+- The reverted drill still proved the delivery guarantee: the consumers
+  resumed from their committed offsets, drained a backlog of ~1,400 events
+  at twice the normal rate, and nothing was lost. The freshness SLI showed
+  the cost honestly (end-to-end latency up to minutes for the backlog).
 
 ---
 
