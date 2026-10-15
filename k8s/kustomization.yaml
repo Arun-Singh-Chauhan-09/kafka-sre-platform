@@ -24,7 +24,7 @@ labels:
 images:
   - name: stream-app
     newName: ghcr.io/arun-singh-chauhan-09/kafka-sre-platform
-    newTag: 0.1.0
+    newTag: 0.2.0
 
 # Grafana's sidecar loads any ConfigMap labelled grafana_dashboard=1, so the
 # dashboard ships with the code instead of being clicked together.
