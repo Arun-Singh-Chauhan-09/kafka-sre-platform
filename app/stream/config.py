@@ -56,7 +56,7 @@ def load(env: Mapping[str, str] | None = None) -> Settings:
         redis_tls=env.get("REDIS_TLS", "false").lower() == "true",
         redis_ca_file=env.get("REDIS_CA_FILE", ""),
         produce_rate=max(_float(env, "PRODUCE_RATE", 50.0), 0.1),
-        hotels=max(_int(env, "HOTELS", 5000), 1),
+        hotels=max(_int(env, "HOTELS", 8000), 1),
         processing_delay_ms=max(_float(env, "PROCESSING_DELAY_MS", 0.0), 0.0),
         failure_rate=min(max(_float(env, "FAILURE_RATE", 0.0), 0.0), 1.0),
         metrics_port=_int(env, "METRICS_PORT", 8000),
