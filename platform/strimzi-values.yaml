@@ -19,3 +19,15 @@ resources:
   limits:
     cpu: 500m
     memory: 384Mi
+
+# The operator's own pod: same hardening as everything else, so the
+# namespace's "warn: restricted" label has nothing to warn about.
+# (The operator image already runs as a non-root user.)
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
